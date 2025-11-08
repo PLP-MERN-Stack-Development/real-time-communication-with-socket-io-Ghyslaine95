@@ -164,10 +164,10 @@ Check server logs for real-time activity monitoring
 
 📸 Application Screenshots
 Login Screen
-![Login Screen](images/login.png)
+![Login Screen](./images/login.PNG)
 
 Main Chat Interface
-![Chat Screen](images/chat.png)
+![Chat Screen](./images/chat.PNG)
 
 
 📄 License
