@@ -1,132 +1,258 @@
-// server.js - Main server file for Socket.io chat application
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import cors from 'cors';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const path = require('path');
-
-// Load environment variables
-dotenv.config();
+// ES modules equivalent for __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Initialize Express app
 const app = express();
-const server = http.createServer(app);
+const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
+    origin: "http://localhost:5173", // ASSUREZ-VOUS QUE C'EST LE BON PORT!
+    methods: ["GET", "POST"]
+  }
 });
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(join(__dirname, 'public')));
 
 // Store connected users and messages
-const users = {};
-const messages = [];
-const typingUsers = {};
+const users = new Map(); // socket.id -> user data
+const rooms = ['general', 'random', 'tech'];
+const messages = {
+  general: [],
+  random: [],
+  tech: []
+};
+
+console.log('🔄 Initializing Socket.io server...');
 
 // Socket.io connection handler
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`✅ User connected: ${socket.id}`);
+  
+  let currentUser = null;
 
-  // Handle user joining
+  // Handle user joining - CORRIGÉ
   socket.on('user_join', (username) => {
-    users[socket.id] = { username, id: socket.id };
-    io.emit('user_list', Object.values(users));
-    io.emit('user_joined', { username, id: socket.id });
-    console.log(`${username} joined the chat`);
+    console.log(`👋 User join request: "${username}" (socket: ${socket.id})`);
+    
+    if (!username || username.trim() === '') {
+      console.log('❌ Invalid username');
+      socket.emit('error', { message: 'Invalid username' });
+      return;
+    }
+
+    // Create user object
+    currentUser = {
+      id: socket.id,
+      username: username.trim(),
+      room: 'general',
+      isOnline: true,
+      lastSeen: new Date()
+    };
+    
+    // Store user
+    users.set(socket.id, currentUser);
+    socket.join('general');
+    
+    console.log(`✅ User registered: ${currentUser.username}`);
+    console.log(`📊 Total users: ${users.size}`);
+    
+    // Notify all clients
+    io.emit('user_list', Array.from(users.values()));
+    io.emit('user_joined', { 
+      username: currentUser.username, 
+      id: socket.id 
+    });
+    
+    // Send current state to the new user
+    socket.emit('rooms_list', rooms);
+    socket.emit('message_history', messages.general || []);
+    
+    console.log(`🎉 ${currentUser.username} successfully joined the chat`);
   });
 
-  // Handle chat messages
+  // Handle chat messages - CORRIGÉ
   socket.on('send_message', (messageData) => {
+    console.log(`📨 Received send_message event from ${socket.id}:`, messageData);
+    
+    const user = users.get(socket.id);
+    
+    if (!user) {
+      console.log(`❌ Message from unknown user (socket: ${socket.id})`);
+      console.log(`📊 Current users:`, Array.from(users.keys()));
+      socket.emit('error', { message: 'User not registered' });
+      return;
+    }
+
+    console.log(`📝 Message from ${user.username}: "${messageData.content}"`);
+
     const message = {
-      ...messageData,
-      id: Date.now(),
-      sender: users[socket.id]?.username || 'Anonymous',
-      senderId: socket.id,
+      id: Date.now().toString(),
+      username: user.username,
+      userId: socket.id,
+      content: messageData.content,
       timestamp: new Date().toISOString(),
+      room: user.room,
+      type: 'text'
     };
     
-    messages.push(message);
-    
-    // Limit stored messages to prevent memory issues
-    if (messages.length > 100) {
-      messages.shift();
-    }
-    
-    io.emit('receive_message', message);
-  });
-
-  // Handle typing indicator
-  socket.on('typing', (isTyping) => {
-    if (users[socket.id]) {
-      const username = users[socket.id].username;
+    // Store message in room history
+    if (messages[user.room]) {
+      messages[user.room].push(message);
       
-      if (isTyping) {
-        typingUsers[socket.id] = username;
-      } else {
-        delete typingUsers[socket.id];
+      // Limit stored messages
+      if (messages[user.room].length > 100) {
+        messages[user.room].shift();
       }
-      
-      io.emit('typing_users', Object.values(typingUsers));
     }
+    
+    console.log(`📢 Broadcasting to room: ${user.room}`);
+    console.log(`👥 Users in room ${user.room}:`, 
+      Array.from(users.values())
+        .filter(u => u.room === user.room)
+        .map(u => u.username)
+    );
+    
+    // Broadcast to room - CORRECTION IMPORTANTE
+    io.to(user.room).emit('receive_message', message);
+    console.log(`✅ Message "${messageData.content}" broadcasted by ${user.username}`);
   });
 
-  // Handle private messages
-  socket.on('private_message', ({ to, message }) => {
-    const messageData = {
-      id: Date.now(),
-      sender: users[socket.id]?.username || 'Anonymous',
-      senderId: socket.id,
-      message,
-      timestamp: new Date().toISOString(),
-      isPrivate: true,
-    };
+  // Handle room joining
+  socket.on('join_room', (roomName) => {
+    const user = users.get(socket.id);
+    if (!user) {
+      console.log(`❌ Room join attempt by unknown user: ${socket.id}`);
+      return;
+    }
+
+    if (!rooms.includes(roomName)) {
+      console.log(`❌ Invalid room: ${roomName}`);
+      socket.emit('error', { message: 'Invalid room' });
+      return;
+    }
+
+    console.log(`🔄 ${user.username} joining room: ${roomName}`);
+
+    // Leave previous room
+    if (user.room) {
+      socket.leave(user.room);
+      console.log(`← ${user.username} left room: ${user.room}`);
+    }
+
+    // Join new room
+    user.room = roomName;
+    socket.join(roomName);
+
+    console.log(`→ ${user.username} joined room: ${roomName}`);
+
+    // Send room message history
+    socket.emit('message_history', messages[roomName] || []);
     
-    socket.to(to).emit('private_message', messageData);
-    socket.emit('private_message', messageData);
+    // Notify room
+    socket.to(roomName).emit('user_joined_room', {
+      username: user.username,
+      room: roomName,
+      timestamp: new Date()
+    });
+
+    console.log(`✅ ${user.username} successfully switched to room: ${roomName}`);
   });
 
   // Handle disconnection
   socket.on('disconnect', () => {
-    if (users[socket.id]) {
-      const { username } = users[socket.id];
-      io.emit('user_left', { username, id: socket.id });
-      console.log(`${username} left the chat`);
+    console.log(`❌ User disconnected: ${socket.id}`);
+    
+    const user = users.get(socket.id);
+    if (user) {
+      console.log(`👋 User left: ${user.username}`);
+      
+      user.isOnline = false;
+      user.lastSeen = new Date();
+
+      io.emit('user_left', { username: user.username, id: socket.id });
+      
+      // Remove user after delay
+      setTimeout(() => {
+        if (users.has(socket.id)) {
+          users.delete(socket.id);
+          io.emit('user_list', Array.from(users.values()));
+          console.log(`🗑️ Removed user: ${user.username}. Total users: ${users.size}`);
+        }
+      }, 5000);
     }
-    
-    delete users[socket.id];
-    delete typingUsers[socket.id];
-    
-    io.emit('user_list', Object.values(users));
-    io.emit('typing_users', Object.values(typingUsers));
+  });
+
+  // Error handling
+  socket.on('error', (error) => {
+    console.error(`💥 Socket error for ${socket.id}:`, error);
   });
 });
 
-// API routes
-app.get('/api/messages', (req, res) => {
-  res.json(messages);
+// API routes for testing
+app.get('/api/messages/:room?', (req, res) => {
+  const room = req.params.room || 'general';
+  res.json({
+    room,
+    messages: messages[room] || [],
+    total: messages[room]?.length || 0
+  });
 });
 
 app.get('/api/users', (req, res) => {
-  res.json(Object.values(users));
+  res.json({
+    users: Array.from(users.values()),
+    total: users.size
+  });
 });
 
-// Root route
-app.get('/', (req, res) => {
-  res.send('Socket.io Chat Server is running');
+app.get('/api/rooms', (req, res) => {
+  res.json(rooms);
+});
+
+app.get('/api/debug', (req, res) => {
+  res.json({
+    server: 'running',
+    users: Array.from(users.values()).map(u => ({
+      username: u.username,
+      room: u.room,
+      isOnline: u.isOnline,
+      socketId: u.id
+    })),
+    messages: Object.keys(messages).reduce((acc, room) => {
+      acc[room] = messages[room].length;
+      return acc;
+    }, {}),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    users: users.size,
+    userList: Array.from(users.values()).map(u => u.username)
+  });
 });
 
 // Start server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 Socket.io server initialized - FIXED VERSION`);
+  console.log(`🌐 Client URL: http://localhost:5173`);
+  console.log(`🔧 Debug endpoint: http://localhost:${PORT}/api/debug`);
+  console.log(`❤️ Health check: http://localhost:${PORT}/health`);
 });
-
-module.exports = { app, server, io }; 
