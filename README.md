@@ -167,7 +167,7 @@ Login Screen
 ![Login Screen](images/login.png)
 
 Main Chat Interface
-![Chat Demo](images/chat.png)
+![Chat Screen](images/chat.png)
 
 
 📄 License
